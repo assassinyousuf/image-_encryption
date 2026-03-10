@@ -1,16 +1,21 @@
-# image_to_audio
+# image-_encryption
 
-A new Flutter project.
+Secure Image-to-Audio Transmission System (Flutter).
 
-## Getting Started
+This app implements a Sender/Receiver workflow that converts an image into an encrypted bitstream, modulates it into an FSK WAV audio file, and then performs the reverse operation to recover the image.
 
-This project is a starting point for a Flutter application.
+## Features
 
-A few resources to get you started if this is your first Flutter project:
+- Sender: pick image → device-derived key → XOR bitstream encryption → FSK encode → export WAV
+- Receiver: import WAV → Goertzel-based FSK decode → decrypt → reconstruct PNG
+- UI styled to match the HTML mockups under `ui folder/`
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+## Run
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+1. `flutter pub get`
+2. `flutter run`
+
+## Notes
+
+- The app saves exported WAV and decoded PNG into the app documents directory (location varies by platform).
+- On Android 13+ the app requests media read permissions for selecting images/audio.
