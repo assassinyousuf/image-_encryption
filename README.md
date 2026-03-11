@@ -19,3 +19,4 @@ This app implements a Sender/Receiver workflow that converts an image into an en
 
 - The app saves exported WAV and decoded PNG into the app documents directory (location varies by platform).
 - On Android 13+ the app requests media read permissions for selecting images/audio.
+- To keep memory usage and transmission size manageable, the Sender resizes images to a maximum of 32px on the longest side before encoding.
