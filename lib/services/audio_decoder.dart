@@ -5,14 +5,23 @@ import '../utils/signal_utils.dart';
 
 class AudioDecoder {
   static const int bitDurationMs = 20;
-  static const double freq0Hz = 500.0;
-  static const double freq1Hz = 1200.0;
+  static const double freq0Hz = 1500.0;
+  static const double freq1Hz = 3000.0;
 
-  Future<List<int>> decodeAudioToBinary(File wavFile) async {
+  Future<List<int>> decodeAudioToBinary(
+    File wavFile, {
+    int? bitDurationMsOverride,
+    double? frequency0HzOverride,
+    double? frequency1HzOverride,
+  }) async {
     final bytes = await wavFile.readAsBytes();
     final wav = _parseWavPcm16(bytes);
 
-    final spb = (wav.sampleRate * bitDurationMs / 1000).round();
+    final durationMs = bitDurationMsOverride ?? bitDurationMs;
+    final f0 = frequency0HzOverride ?? freq0Hz;
+    final f1 = frequency1HzOverride ?? freq1Hz;
+
+    final spb = (wav.sampleRate * durationMs / 1000).round();
     if (spb <= 0) {
       throw StateError('Invalid samples-per-bit: $spb');
     }
@@ -31,14 +40,14 @@ class AudioDecoder {
         start: start,
         length: spb,
         sampleRate: wav.sampleRate,
-        targetFrequencyHz: freq0Hz,
+        targetFrequencyHz: f0,
       );
       final p1 = SignalUtils.goertzelPowerInt16(
         samples: wav.samples,
         start: start,
         length: spb,
         sampleRate: wav.sampleRate,
-        targetFrequencyHz: freq1Hz,
+        targetFrequencyHz: f1,
       );
       out[bitIndex] = p1 > p0 ? 1 : 0;
     }
@@ -121,10 +130,14 @@ _WavPcm16 _parseWavPcm16(Uint8List bytes) {
     throw const FormatException('Only PCM WAV is supported.');
   }
   if (channels != 1) {
-    throw FormatException('Only mono WAV is supported (got $channels channels).');
+    throw FormatException(
+      'Only mono WAV is supported (got $channels channels).',
+    );
   }
   if (bitsPerSample != 16) {
-    throw FormatException('Only 16-bit WAV is supported (got $bitsPerSample bits).');
+    throw FormatException(
+      'Only 16-bit WAV is supported (got $bitsPerSample bits).',
+    );
   }
 
   var safeDataSize = dataSize;

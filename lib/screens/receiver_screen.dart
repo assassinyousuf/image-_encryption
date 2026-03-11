@@ -9,6 +9,7 @@ import '../services/audio_decoder.dart';
 import '../services/device_key_service.dart';
 import '../services/encryption_service.dart';
 import '../services/image_reconstructor.dart';
+import '../services/noise_resistant_transmission_service.dart';
 import '../services/permission_service.dart';
 import '../utils/app_colors.dart';
 import '../utils/color_extensions.dart';
@@ -28,6 +29,8 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
   final DeviceKeyService _deviceKeyService = DeviceKeyService();
   final EncryptionService _encryptionService = EncryptionService();
   final ImageReconstructor _imageReconstructor = ImageReconstructor();
+  final NoiseResistantTransmissionService _nrsts =
+      NoiseResistantTransmissionService();
 
   bool _busy = false;
 
@@ -87,28 +90,51 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
 
     setState(() => _busy = true);
     try {
-      final bits = await _audioDecoder.decodeAudioToBinary(file);
-      if (!mounted) return;
-      setState(() {
-        _decodedBits = bits;
-      });
+      try {
+        final rawBits = await _audioDecoder.decodeAudioToBinary(file);
+        final recoveredEncryptedBits = _nrsts.recoverEncryptedBits(rawBits);
 
-      final key = await _deviceKeyService.generateDeviceKey();
-      final decrypted = _encryptionService.decryptBits(
-        encryptedBits: bits,
-        key: key,
-      );
-      if (!mounted) return;
-      setState(() {
-        _decryptedBits = decrypted;
-      });
+        final key = await _deviceKeyService.generateDeviceKey();
+        final decrypted = _encryptionService.decryptBits(
+          encryptedBits: recoveredEncryptedBits,
+          key: key,
+        );
+        final pngBytes = _imageReconstructor.reconstructPngFromBinaryBits(
+          decrypted,
+        );
 
-      final pngBytes = _imageReconstructor.reconstructPngFromBinaryBits(decrypted);
-      if (!mounted) return;
-      setState(() {
-        _pngBytes = pngBytes;
-      });
-      _showSnackBar('Image reconstructed.');
+        if (!mounted) return;
+        setState(() {
+          _decodedBits = recoveredEncryptedBits;
+          _decryptedBits = decrypted;
+          _pngBytes = pngBytes;
+        });
+        _showSnackBar('Image reconstructed.');
+      } catch (_) {
+        final rawBits = await _audioDecoder.decodeAudioToBinary(
+          file,
+          frequency0HzOverride: 500.0,
+          frequency1HzOverride: 1200.0,
+        );
+        final recoveredEncryptedBits = _nrsts.recoverEncryptedBits(rawBits);
+
+        final key = await _deviceKeyService.generateDeviceKey();
+        final decrypted = _encryptionService.decryptBits(
+          encryptedBits: recoveredEncryptedBits,
+          key: key,
+        );
+        final pngBytes = _imageReconstructor.reconstructPngFromBinaryBits(
+          decrypted,
+        );
+
+        if (!mounted) return;
+        setState(() {
+          _decodedBits = recoveredEncryptedBits;
+          _decryptedBits = decrypted;
+          _pngBytes = pngBytes;
+        });
+        _showSnackBar('Image reconstructed (legacy frequencies).');
+      }
     } catch (e) {
       _showSnackBar('Receiver failed: $e');
     } finally {
@@ -143,9 +169,9 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
 
   void _showSnackBar(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   String _fileName(File? file) {
@@ -170,10 +196,10 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
     final progress = _pngBytes != null
         ? 1.0
         : (_decryptedBits != null
-            ? 0.80
-            : (_decodedBits != null
-                ? 0.64
-                : (_audioFile != null ? 0.32 : 0.0)));
+              ? 0.80
+              : (_decodedBits != null
+                    ? 0.64
+                    : (_audioFile != null ? 0.32 : 0.0)));
     final percent = (progress * 100).round();
 
     return Scaffold(
@@ -183,7 +209,10 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
             Column(
               children: [
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 12,
+                  ),
                   decoration: BoxDecoration(
                     border: Border(
                       bottom: BorderSide(color: primary.withOpacity01(0.10)),
@@ -262,16 +291,15 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
                                 style: TextStyle(
                                   fontSize: 18,
                                   fontWeight: FontWeight.bold,
-                                  color: isDark ? Colors.white : AppColors.slate900,
+                                  color: isDark
+                                      ? Colors.white
+                                      : AppColors.slate900,
                                 ),
                               ),
                               const SizedBox(height: 6),
                               Text(
                                 'Selected: ${_fileName(_audioFile)}',
-                                style: TextStyle(
-                                  color: muted,
-                                  fontSize: 13,
-                                ),
+                                style: TextStyle(color: muted, fontSize: 13),
                               ),
                               const SizedBox(height: 14),
                               FilledButton(
@@ -301,12 +329,15 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
                           decoration: BoxDecoration(
                             color: AppColors.slate900.withOpacity01(0.50),
                             borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: primary.withOpacity01(0.10)),
+                            border: Border.all(
+                              color: primary.withOpacity01(0.10),
+                            ),
                           ),
                           child: Column(
                             children: [
                               Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
                                 children: [
                                   Text(
                                     'Frequency Spectrum Analysis'.toUpperCase(),
@@ -336,14 +367,19 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
                                     for (final h in _spectrumHeights)
                                       Expanded(
                                         child: Padding(
-                                          padding: const EdgeInsets.symmetric(horizontal: 2),
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 2,
+                                          ),
                                           child: Container(
                                             height: h,
                                             decoration: BoxDecoration(
-                                              color: primary.withOpacity01(0.40),
-                                              borderRadius: const BorderRadius.vertical(
-                                                top: Radius.circular(2),
+                                              color: primary.withOpacity01(
+                                                0.40,
                                               ),
+                                              borderRadius:
+                                                  const BorderRadius.vertical(
+                                                    top: Radius.circular(2),
+                                                  ),
                                             ),
                                           ),
                                         ),
@@ -360,7 +396,9 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
                           child: Text(
                             'Reconstructed Image Preview'.toUpperCase(),
                             style: TextStyle(
-                              color: isDark ? AppColors.slate400 : AppColors.slate600,
+                              color: isDark
+                                  ? AppColors.slate400
+                                  : AppColors.slate600,
                               fontSize: 12,
                               fontWeight: FontWeight.bold,
                               letterSpacing: 2.0,
@@ -373,7 +411,9 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
                           child: Container(
                             decoration: BoxDecoration(
                               borderRadius: BorderRadius.circular(12),
-                              border: Border.all(color: primary.withOpacity01(0.20)),
+                              border: Border.all(
+                                color: primary.withOpacity01(0.20),
+                              ),
                             ),
                             clipBehavior: Clip.antiAlias,
                             child: Stack(
@@ -393,13 +433,11 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
                                   ),
                                 ),
                                 if (_pngBytes != null)
-                                  Image.memory(
-                                    _pngBytes!,
-                                    fit: BoxFit.contain,
-                                  ),
+                                  Image.memory(_pngBytes!, fit: BoxFit.contain),
                                 if (_pngBytes == null)
                                   Container(
-                                    color: AppColors.backgroundDark.withOpacity01(0.80),
+                                    color: AppColors.backgroundDark
+                                        .withOpacity01(0.80),
                                     child: Center(
                                       child: Column(
                                         mainAxisSize: MainAxisSize.min,
@@ -413,10 +451,11 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
                                           Text(
                                             _busy
                                                 ? 'Processing Data Packets...'
-                                                : 'Awaiting Signal...'
-                                            ,
+                                                : 'Awaiting Signal...',
                                             style: TextStyle(
-                                              color: primary.withOpacity01(0.60),
+                                              color: primary.withOpacity01(
+                                                0.60,
+                                              ),
                                               fontSize: 14,
                                               fontWeight: FontWeight.w600,
                                             ),
@@ -434,7 +473,8 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
                                         begin: Alignment.bottomCenter,
                                         end: Alignment.topCenter,
                                         colors: [
-                                          AppColors.backgroundDark.withOpacity01(0.90),
+                                          AppColors.backgroundDark
+                                              .withOpacity01(0.90),
                                           Colors.transparent,
                                         ],
                                       ),
@@ -443,13 +483,16 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
                                       children: [
                                         Expanded(
                                           child: Column(
-                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
                                             mainAxisSize: MainAxisSize.min,
                                             children: [
                                               Text(
                                                 'Progress'.toUpperCase(),
                                                 style: TextStyle(
-                                                  color: primary.withOpacity01(0.70),
+                                                  color: primary.withOpacity01(
+                                                    0.70,
+                                                  ),
                                                   fontSize: 10,
                                                   fontWeight: FontWeight.bold,
                                                   letterSpacing: 2.0,
@@ -457,14 +500,17 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
                                               ),
                                               const SizedBox(height: 6),
                                               ClipRRect(
-                                                borderRadius: BorderRadius.circular(999),
+                                                borderRadius:
+                                                    BorderRadius.circular(999),
                                                 child: SizedBox(
                                                   height: 6,
-                                                  child: LinearProgressIndicator(
-                                                    value: progress,
-                                                    backgroundColor: AppColors.slate800,
-                                                    color: primary,
-                                                  ),
+                                                  child:
+                                                      LinearProgressIndicator(
+                                                        value: progress,
+                                                        backgroundColor:
+                                                            AppColors.slate800,
+                                                        color: primary,
+                                                      ),
                                                 ),
                                               ),
                                             ],
@@ -498,7 +544,9 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
                             decoration: BoxDecoration(
                               color: primary.withOpacity01(0.20),
                               borderRadius: BorderRadius.circular(12),
-                              border: Border.all(color: primary.withOpacity01(0.30)),
+                              border: Border.all(
+                                color: primary.withOpacity01(0.30),
+                              ),
                             ),
                             child: Opacity(
                               opacity: canSave ? 1.0 : 0.50,
@@ -521,7 +569,8 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
                         ),
                         const SizedBox(height: 10),
                         Text(
-                          'Encryption Key: SHA-256 Device Key (XOR)'.toUpperCase(),
+                          'Encryption Key: SHA-256 Device Key (XOR)'
+                              .toUpperCase(),
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             color: muted,
@@ -540,9 +589,7 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
               const Positioned.fill(
                 child: ColoredBox(
                   color: Color(0x66000000),
-                  child: Center(
-                    child: CircularProgressIndicator(),
-                  ),
+                  child: Center(child: CircularProgressIndicator()),
                 ),
               ),
           ],
@@ -555,20 +602,30 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
           decoration: BoxDecoration(
             color: Theme.of(context).scaffoldBackgroundColor,
-            border: Border(
-              top: BorderSide(color: primary.withOpacity01(0.10)),
-            ),
+            border: Border(top: BorderSide(color: primary.withOpacity01(0.10))),
           ),
           child: Row(
             children: const [
               Expanded(
-                child: _BottomItem(icon: Icons.radio, label: 'Receiver', active: true),
+                child: _BottomItem(
+                  icon: Icons.radio,
+                  label: 'Receiver',
+                  active: true,
+                ),
               ),
               Expanded(
-                child: _BottomItem(icon: Icons.history, label: 'History', active: false),
+                child: _BottomItem(
+                  icon: Icons.history,
+                  label: 'History',
+                  active: false,
+                ),
               ),
               Expanded(
-                child: _BottomItem(icon: Icons.settings, label: 'Settings', active: false),
+                child: _BottomItem(
+                  icon: Icons.settings,
+                  label: 'Settings',
+                  active: false,
+                ),
               ),
             ],
           ),
@@ -619,7 +676,9 @@ class _ReceiverStepper extends StatelessWidget {
           subtitle: step2Done
               ? 'Binary payload extracted'
               : 'Extracting image data from frequency waves',
-          connectorColor: step2Done ? primary : (isDark ? AppColors.slate800 : AppColors.slate700),
+          connectorColor: step2Done
+              ? primary
+              : (isDark ? AppColors.slate800 : AppColors.slate700),
           subtitleColor: muted,
         ),
         _StepRow(
@@ -671,12 +730,16 @@ class _StepRow extends StatelessWidget {
     final isInactive = dimWhenInactive && !active && !done;
 
     final circleBg = done
-      ? primary.withOpacity01(0.20)
+        ? primary.withOpacity01(0.20)
         : (active ? primary : Colors.transparent);
 
     final circleBorder = done
         ? Colors.transparent
-        : (active ? Colors.transparent : (Theme.of(context).brightness == Brightness.dark ? AppColors.slate800 : AppColors.slate700));
+        : (active
+              ? Colors.transparent
+              : (Theme.of(context).brightness == Brightness.dark
+                    ? AppColors.slate800
+                    : AppColors.slate700));
 
     final iconColor = active
         ? AppColors.backgroundDark
@@ -699,16 +762,10 @@ class _StepRow extends StatelessWidget {
                     shape: BoxShape.circle,
                     border: Border.all(color: circleBorder, width: 1),
                   ),
-                  child: Center(
-                    child: Icon(icon, size: 18, color: iconColor),
-                  ),
+                  child: Center(child: Icon(icon, size: 18, color: iconColor)),
                 ),
                 if (showConnector)
-                  Container(
-                    width: 2,
-                    height: 32,
-                    color: connectorColor,
-                  ),
+                  Container(width: 2, height: 32, color: connectorColor),
               ],
             ),
           ),
@@ -724,16 +781,20 @@ class _StepRow extends StatelessWidget {
                     style: TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w600,
-                      color: active ? primary : (done ? (Theme.of(context).brightness == Brightness.dark ? Colors.white : AppColors.slate900) : subtitleColor),
+                      color: active
+                          ? primary
+                          : (done
+                                ? (Theme.of(context).brightness ==
+                                          Brightness.dark
+                                      ? Colors.white
+                                      : AppColors.slate900)
+                                : subtitleColor),
                     ),
                   ),
                   const SizedBox(height: 2),
                   Text(
                     subtitle,
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: subtitleColor,
-                    ),
+                    style: TextStyle(fontSize: 11, color: subtitleColor),
                   ),
                 ],
               ),

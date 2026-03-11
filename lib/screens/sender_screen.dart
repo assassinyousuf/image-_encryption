@@ -8,6 +8,7 @@ import '../services/audio_encoder.dart';
 import '../services/device_key_service.dart';
 import '../services/encryption_service.dart';
 import '../services/image_processor.dart';
+import '../services/noise_resistant_transmission_service.dart';
 import '../services/permission_service.dart';
 import '../utils/app_colors.dart';
 import '../utils/color_extensions.dart';
@@ -26,6 +27,8 @@ class _SenderScreenState extends State<SenderScreen> {
   final ImageProcessor _imageProcessor = ImageProcessor();
   final DeviceKeyService _deviceKeyService = DeviceKeyService();
   final EncryptionService _encryptionService = EncryptionService();
+  final NoiseResistantTransmissionService _nrsts =
+      NoiseResistantTransmissionService();
   final AudioEncoder _audioEncoder = AudioEncoder();
 
   bool _busy = false;
@@ -121,14 +124,15 @@ class _SenderScreenState extends State<SenderScreen> {
 
     setState(() => _busy = true);
     try {
-      final packet = _audioEncoder.encodeBinaryToAudio(bits);
+      final protectedBits = _nrsts.protectEncryptedBits(bits);
+      final packet = _audioEncoder.encodeBinaryToAudio(protectedBits);
 
       if (!mounted) return;
       setState(() {
         _audioPacket = packet;
         _savedAudioFile = null;
       });
-      _showSnackBar('Audio waveform generated.');
+      _showSnackBar('Audio waveform generated (NRSTS protected).');
     } catch (e) {
       _showSnackBar('Audio encoding failed: $e');
     } finally {
@@ -166,9 +170,9 @@ class _SenderScreenState extends State<SenderScreen> {
 
   void _showSnackBar(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   String _fileName(File? file) {
@@ -187,9 +191,7 @@ class _SenderScreenState extends State<SenderScreen> {
     final step1Done = _selectedImage != null;
     final step2Done = _encryptedBits != null;
     final step3Done = _audioPacket != null;
-    final activeStep = !step1Done
-        ? 1
-        : (!step2Done ? 2 : (!step3Done ? 3 : 3));
+    final activeStep = !step1Done ? 1 : (!step2Done ? 2 : (!step3Done ? 3 : 3));
 
     final canEncrypt = !_busy && _selectedImage != null;
     final canEncode = !_busy && _encryptedBits != null;
@@ -202,7 +204,10 @@ class _SenderScreenState extends State<SenderScreen> {
             Column(
               children: [
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 12,
+                  ),
                   decoration: BoxDecoration(
                     border: Border(
                       bottom: BorderSide(color: primary.withOpacity01(0.10)),
@@ -215,11 +220,7 @@ class _SenderScreenState extends State<SenderScreen> {
                         width: 40,
                         height: 40,
                         child: Center(
-                          child: Icon(
-                            Icons.shield,
-                            size: 30,
-                            color: primary,
-                          ),
+                          child: Icon(Icons.shield, size: 30, color: primary),
                         ),
                       ),
                       const SizedBox(width: 8),
@@ -315,7 +316,9 @@ class _SenderScreenState extends State<SenderScreen> {
                                           style: TextStyle(
                                             fontSize: 18,
                                             fontWeight: FontWeight.bold,
-                                            color: isDark ? Colors.white : AppColors.slate900,
+                                            color: isDark
+                                                ? Colors.white
+                                                : AppColors.slate900,
                                           ),
                                         ),
                                         const SizedBox(height: 8),
@@ -335,7 +338,8 @@ class _SenderScreenState extends State<SenderScreen> {
                                           onPressed: _busy ? null : _pickImage,
                                           style: FilledButton.styleFrom(
                                             backgroundColor: primary,
-                                            foregroundColor: AppColors.backgroundDark,
+                                            foregroundColor:
+                                                AppColors.backgroundDark,
                                             shape: const StadiumBorder(),
                                             padding: const EdgeInsets.symmetric(
                                               horizontal: 28,
@@ -344,7 +348,9 @@ class _SenderScreenState extends State<SenderScreen> {
                                           ),
                                           child: const Text(
                                             'Select Image',
-                                            style: TextStyle(fontWeight: FontWeight.bold),
+                                            style: TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                            ),
                                           ),
                                         ),
                                       ],
@@ -385,19 +391,20 @@ class _SenderScreenState extends State<SenderScreen> {
                           decoration: BoxDecoration(
                             color: AppColors.slate900.withOpacity01(0.50),
                             borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                              color: AppColors.slate800,
-                            ),
+                            border: Border.all(color: AppColors.slate800),
                           ),
                           child: Column(
                             children: [
                               Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
                                 children: [
                                   Text(
                                     'Audio Output Visualizer'.toUpperCase(),
                                     style: TextStyle(
-                                      color: isDark ? AppColors.slate500 : AppColors.slate600,
+                                      color: isDark
+                                          ? AppColors.slate500
+                                          : AppColors.slate600,
                                       fontSize: 12,
                                       fontWeight: FontWeight.bold,
                                       letterSpacing: 2.0,
@@ -422,13 +429,17 @@ class _SenderScreenState extends State<SenderScreen> {
                                   children: [
                                     for (final h in _visualizerHeights)
                                       Padding(
-                                        padding: const EdgeInsets.symmetric(horizontal: 2),
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 2,
+                                        ),
                                         child: Container(
                                           width: 3,
                                           height: h,
                                           decoration: BoxDecoration(
                                             color: primary.withOpacity01(0.40),
-                                            borderRadius: BorderRadius.circular(999),
+                                            borderRadius: BorderRadius.circular(
+                                              999,
+                                            ),
                                           ),
                                         ),
                                       ),
@@ -441,16 +452,21 @@ class _SenderScreenState extends State<SenderScreen> {
                                 borderRadius: BorderRadius.circular(12),
                                 child: Container(
                                   width: double.infinity,
-                                  padding: const EdgeInsets.symmetric(vertical: 16),
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 16,
+                                  ),
                                   decoration: BoxDecoration(
                                     color: primary.withOpacity01(0.10),
                                     borderRadius: BorderRadius.circular(12),
-                                    border: Border.all(color: primary.withOpacity01(0.30)),
+                                    border: Border.all(
+                                      color: primary.withOpacity01(0.30),
+                                    ),
                                   ),
                                   child: Opacity(
                                     opacity: canExport ? 1.0 : 0.40,
                                     child: Row(
-                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
                                       children: [
                                         Icon(Icons.ios_share, color: primary),
                                         const SizedBox(width: 10),
@@ -490,9 +506,7 @@ class _SenderScreenState extends State<SenderScreen> {
               const Positioned.fill(
                 child: ColoredBox(
                   color: Color(0x66000000),
-                  child: Center(
-                    child: CircularProgressIndicator(),
-                  ),
+                  child: Center(child: CircularProgressIndicator()),
                 ),
               ),
           ],
@@ -511,16 +525,32 @@ class _SenderScreenState extends State<SenderScreen> {
           child: Row(
             children: const [
               Expanded(
-                child: _BottomItem(icon: Icons.send, label: 'Sender', active: true),
+                child: _BottomItem(
+                  icon: Icons.send,
+                  label: 'Sender',
+                  active: true,
+                ),
               ),
               Expanded(
-                child: _BottomItem(icon: Icons.cached, label: 'Vault', active: false),
+                child: _BottomItem(
+                  icon: Icons.cached,
+                  label: 'Vault',
+                  active: false,
+                ),
               ),
               Expanded(
-                child: _BottomItem(icon: Icons.history, label: 'History', active: false),
+                child: _BottomItem(
+                  icon: Icons.history,
+                  label: 'History',
+                  active: false,
+                ),
               ),
               Expanded(
-                child: _BottomItem(icon: Icons.account_circle, label: 'Profile', active: false),
+                child: _BottomItem(
+                  icon: Icons.account_circle,
+                  label: 'Profile',
+                  active: false,
+                ),
               ),
             ],
           ),
@@ -555,10 +585,7 @@ class _ProgressStepper extends StatelessWidget {
           Positioned.fill(
             child: Align(
               alignment: Alignment.center,
-              child: Container(
-                height: 2,
-                color: primary.withOpacity01(0.20),
-              ),
+              child: Container(height: 2, color: primary.withOpacity01(0.20)),
             ),
           ),
           Row(
@@ -615,10 +642,10 @@ class _Step extends StatelessWidget {
     final disabledBorder = primary.withOpacity01(0.30);
 
     final bg = (done || active) ? enabledColor : disabledBg;
-    final textColor = (done || active) ? AppColors.backgroundDark : AppColors.slate400;
-    final border = (done || active)
-        ? Colors.transparent
-        : disabledBorder;
+    final textColor = (done || active)
+        ? AppColors.backgroundDark
+        : AppColors.slate400;
+    final border = (done || active) ? Colors.transparent : disabledBorder;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -643,10 +670,7 @@ class _Step extends StatelessWidget {
           child: Center(
             child: Text(
               '$number',
-              style: TextStyle(
-                color: textColor,
-                fontWeight: FontWeight.bold,
-              ),
+              style: TextStyle(color: textColor, fontWeight: FontWeight.bold),
             ),
           ),
         ),
@@ -701,7 +725,9 @@ class _TileButton extends StatelessWidget {
               Text(
                 label.toUpperCase(),
                 style: TextStyle(
-                  color: isDark(context) ? AppColors.slate100 : AppColors.slate900,
+                  color: isDark(context)
+                      ? AppColors.slate100
+                      : AppColors.slate900,
                   fontSize: 11,
                   fontWeight: FontWeight.bold,
                   letterSpacing: 2.0,

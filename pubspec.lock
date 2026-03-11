@@ -81,6 +81,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.0.8"
+  dart_reed_solomon_nullsafety:
+    dependency: "direct main"
+    description:
+      name: dart_reed_solomon_nullsafety
+      sha256: fa4b160112567377225a65d55a9cb59df048a58acfcf356b56be5a8dbcbbdb1e
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.2.0"
   dbus:
     dependency: transitive
     description:

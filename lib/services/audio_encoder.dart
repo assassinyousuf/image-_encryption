@@ -10,8 +10,8 @@ class AudioEncoder {
   static const int sampleRate = 44100;
   static const int bitDurationMs = 20;
 
-  static const double freq0Hz = 500.0;
-  static const double freq1Hz = 1200.0;
+  static const double freq0Hz = 1500.0;
+  static const double freq1Hz = 3000.0;
 
   static const int _channels = 1;
   static const double _amplitude = 0.8;
@@ -71,7 +71,8 @@ class AudioEncoder {
 
   Future<File> saveAudioFile(Uint8List wavBytes, {String? fileName}) async {
     final outputDir = await _bestOutputDirectory();
-    final name = fileName ??
+    final name =
+        fileName ??
         'encoded_audio_${DateTime.now().millisecondsSinceEpoch}.wav';
     final file = File('${outputDir.path}${Platform.pathSeparator}$name');
     await file.writeAsBytes(wavBytes, flush: true);
