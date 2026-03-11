@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
+import 'screens/history_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/receiver_screen.dart';
+import 'screens/settings_screen.dart';
 import 'screens/sender_screen.dart';
 import 'utils/app_colors.dart';
 
@@ -59,6 +61,8 @@ class MyApp extends StatelessWidget {
         HomeScreen.routeName: (_) => const HomeScreen(),
         SenderScreen.routeName: (_) => const SenderScreen(),
         ReceiverScreen.routeName: (_) => const ReceiverScreen(),
+        HistoryScreen.routeName: (_) => const HistoryScreen(),
+        SettingsScreen.routeName: (_) => const SettingsScreen(),
       },
     );
   }

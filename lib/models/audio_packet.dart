@@ -5,13 +5,18 @@ class AudioPacket {
   final int bitDurationMs;
   final double frequency0Hz;
   final double frequency1Hz;
-  final Uint8List wavBytes;
+  final Uint8List? wavBytes;
+  final String? wavFilePath;
 
   const AudioPacket({
     required this.sampleRate,
     required this.bitDurationMs,
     required this.frequency0Hz,
     required this.frequency1Hz,
-    required this.wavBytes,
-  });
+    this.wavBytes,
+    this.wavFilePath,
+  }) : assert(
+         wavBytes != null || wavFilePath != null,
+         'Either wavBytes or wavFilePath must be provided.',
+       );
 }

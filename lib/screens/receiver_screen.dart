@@ -1,13 +1,19 @@
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'history_screen.dart';
+import 'settings_screen.dart';
+import '../models/history_entry.dart';
 import '../services/audio_decoder.dart';
-import '../services/device_key_service.dart';
+import '../services/biometric_auth_service.dart';
+import '../services/biometric_key_service.dart';
+import '../services/combined_key_service.dart';
 import '../services/encryption_service.dart';
+import '../services/history_service.dart';
 import '../services/image_reconstructor.dart';
 import '../services/noise_resistant_transmission_service.dart';
 import '../services/permission_service.dart';
@@ -26,18 +32,26 @@ class ReceiverScreen extends StatefulWidget {
 
 class _ReceiverScreenState extends State<ReceiverScreen> {
   final AudioDecoder _audioDecoder = AudioDecoder();
-  final DeviceKeyService _deviceKeyService = DeviceKeyService();
+  final BiometricAuthService _biometricAuth = BiometricAuthService();
+  final BiometricKeyService _biometricKeyService = BiometricKeyService();
+  final CombinedKeyService _combinedKeyService = CombinedKeyService();
   final EncryptionService _encryptionService = EncryptionService();
   final ImageReconstructor _imageReconstructor = ImageReconstructor();
+  final HistoryService _history = HistoryService();
   final NoiseResistantTransmissionService _nrsts =
       NoiseResistantTransmissionService();
+
+  final TextEditingController _pinController = TextEditingController();
 
   bool _busy = false;
 
   File? _audioFile;
-  List<int>? _decodedBits;
-  List<int>? _decryptedBits;
+  bool _signalDecoded = false;
+  bool _payloadDecrypted = false;
   Uint8List? _pngBytes;
+  String? _decodedExtension;
+  String? _payloadMagic;
+  bool _integrityVerified = false;
 
   static const _spectrumHeights = <double>[
     60,
@@ -58,6 +72,12 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
     70,
   ];
 
+  @override
+  void dispose() {
+    _pinController.dispose();
+    super.dispose();
+  }
+
   Future<void> _importAudio() async {
     await PermissionService.requestAudioPickerPermissions();
     final result = await FilePicker.platform.pickFiles(
@@ -74,9 +94,12 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
 
     setState(() {
       _audioFile = File(path);
-      _decodedBits = null;
-      _decryptedBits = null;
+      _signalDecoded = false;
+      _payloadDecrypted = false;
       _pngBytes = null;
+      _decodedExtension = null;
+      _payloadMagic = null;
+      _integrityVerified = false;
     });
 
     await _processSelectedAudio();
@@ -88,53 +111,92 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
       return;
     }
 
+    final pin = _pinController.text;
+    if (pin.trim().isEmpty) {
+      _showSnackBar('Enter a PIN first.');
+      return;
+    }
+
     setState(() => _busy = true);
     try {
-      try {
-        final rawBits = await _audioDecoder.decodeAudioToBinary(file);
-        final recoveredEncryptedBits = _nrsts.recoverEncryptedBits(rawBits);
-
-        final key = await _deviceKeyService.generateDeviceKey();
-        final decrypted = _encryptionService.decryptBits(
-          encryptedBits: recoveredEncryptedBits,
-          key: key,
-        );
-        final pngBytes = _imageReconstructor.reconstructPngFromBinaryBits(
-          decrypted,
-        );
-
-        if (!mounted) return;
-        setState(() {
-          _decodedBits = recoveredEncryptedBits;
-          _decryptedBits = decrypted;
-          _pngBytes = pngBytes;
-        });
-        _showSnackBar('Image reconstructed.');
-      } catch (_) {
-        final rawBits = await _audioDecoder.decodeAudioToBinary(
-          file,
-          frequency0HzOverride: 500.0,
-          frequency1HzOverride: 1200.0,
-        );
-        final recoveredEncryptedBits = _nrsts.recoverEncryptedBits(rawBits);
-
-        final key = await _deviceKeyService.generateDeviceKey();
-        final decrypted = _encryptionService.decryptBits(
-          encryptedBits: recoveredEncryptedBits,
-          key: key,
-        );
-        final pngBytes = _imageReconstructor.reconstructPngFromBinaryBits(
-          decrypted,
-        );
-
-        if (!mounted) return;
-        setState(() {
-          _decodedBits = recoveredEncryptedBits;
-          _decryptedBits = decrypted;
-          _pngBytes = pngBytes;
-        });
-        _showSnackBar('Image reconstructed (legacy frequencies).');
+      final authed = await _biometricAuth.authenticate(
+        reason: 'Verify your fingerprint to decrypt this audio.',
+      );
+      if (!authed) {
+        _showSnackBar('Fingerprint authentication cancelled.');
+        return;
       }
+
+      final biometricKey = await _biometricKeyService.getOrCreateBiometricKey();
+      final key = _combinedKeyService.deriveCombinedKey(
+        biometricKey: biometricKey,
+        pin: pin,
+      );
+
+      const legacyBitDurationMs = 20;
+      const legacyF0 = 500.0;
+      const legacyF1 = 1200.0;
+
+      final attempts = <({int? durationMs, double? f0, double? f1, String tag})>[
+        (durationMs: null, f0: null, f1: null, tag: ''),
+        (durationMs: null, f0: legacyF0, f1: legacyF1, tag: 'legacy frequencies'),
+        (durationMs: legacyBitDurationMs, f0: null, f1: null, tag: 'legacy timing'),
+        (
+          durationMs: legacyBitDurationMs,
+          f0: legacyF0,
+          f1: legacyF1,
+          tag: 'legacy timing + frequencies',
+        ),
+      ];
+
+      Object? lastError;
+      for (final a in attempts) {
+        try {
+          final rawBytes = await _audioDecoder.decodeAudioToBytes(
+            file,
+            bitDurationMsOverride: a.durationMs,
+            frequency0HzOverride: a.f0,
+            frequency1HzOverride: a.f1,
+          );
+          final recoveredEncryptedBytes = _nrsts.recoverEncryptedBytes(rawBytes);
+          final decryptedBytes = _encryptionService.decryptBytes(
+            encryptedBytes: recoveredEncryptedBytes,
+            key: key,
+          );
+          final decodedImage =
+              _imageReconstructor.reconstructImageFromPayloadBytes(decryptedBytes);
+
+          if (!mounted) return;
+          setState(() {
+            _signalDecoded = true;
+            _payloadDecrypted = true;
+            _pngBytes = decodedImage.bytes;
+            _decodedExtension = decodedImage.extension;
+            _payloadMagic = decodedImage.payloadMagic;
+            _integrityVerified = decodedImage.integrityVerified;
+          });
+
+          final suffix = a.tag.isEmpty ? '' : ', ${a.tag}';
+          if (decodedImage.integrityVerified) {
+            _showSnackBar(
+              'Image reconstructed (lossless verified$suffix, ${decodedImage.bytes.length} bytes).',
+            );
+          } else if (decodedImage.payloadMagic == 'I2A2') {
+            _showSnackBar(
+              'Image reconstructed (lossless, unverified$suffix, ${decodedImage.bytes.length} bytes).',
+            );
+          } else {
+            _showSnackBar(
+              'Decoded legacy audio (I2A1$suffix, ${decodedImage.bytes.length} bytes). Re-encode with updated Sender for full quality.',
+            );
+          }
+          return;
+        } catch (e) {
+          lastError = e;
+        }
+      }
+
+      throw lastError ?? const FormatException('Receiver failed to decode.');
     } catch (e) {
       _showSnackBar('Receiver failed: $e');
     } finally {
@@ -164,9 +226,29 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
         dir = await getApplicationDocumentsDirectory();
       }
 
-      final name = 'decoded_image_${DateTime.now().millisecondsSinceEpoch}.png';
+      final ext = (_decodedExtension ?? 'png').replaceAll('.', '');
+      final name = 'decoded_image_${DateTime.now().millisecondsSinceEpoch}.$ext';
       final file = File('${dir.path}${Platform.pathSeparator}$name');
       await file.writeAsBytes(png, flush: true);
+
+      try {
+        final detail = _integrityVerified
+            ? 'Lossless verified (I2A3)'
+            : (_payloadMagic == 'I2A2'
+                ? 'Lossless unverified (I2A2)'
+                : 'Legacy reconstruction (I2A1)');
+        await _history.addEntry(
+          HistoryEntry(
+            timestampMs: DateTime.now().millisecondsSinceEpoch,
+            title: 'Image Saved',
+            detail: detail,
+            path: file.path,
+          ),
+        );
+      } catch (_) {
+        // Best-effort; history should not block saving.
+      }
+
       if (!mounted) return;
       _showSnackBar('Saved: ${file.path}');
     } catch (e) {
@@ -199,18 +281,16 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
     final muted = isDark ? AppColors.slate400 : AppColors.slate600;
 
     final step1Done = _audioFile != null;
-    final step2Done = _decodedBits != null;
-    final step3Done = _decryptedBits != null;
+    final step2Done = _signalDecoded;
+    final step3Done = _payloadDecrypted;
 
     final canSave = !_busy && _pngBytes != null;
 
     final progress = _pngBytes != null
-        ? 1.0
-        : (_decryptedBits != null
-              ? 0.80
-              : (_decodedBits != null
-                    ? 0.64
-                    : (_audioFile != null ? 0.32 : 0.0)));
+      ? 1.0
+      : (_payloadDecrypted
+          ? 0.80
+          : (_signalDecoded ? 0.64 : (_audioFile != null ? 0.32 : 0.0)));
     final percent = (progress * 100).round();
 
     return Scaffold(
@@ -340,6 +420,73 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
                           decoration: BoxDecoration(
                             color: AppColors.slate900.withOpacity01(0.50),
                             borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: AppColors.slate800),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'PIN'.toUpperCase(),
+                                style: TextStyle(
+                                  color: isDark
+                                      ? AppColors.slate500
+                                      : AppColors.slate600,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 2.0,
+                                ),
+                              ),
+                              const SizedBox(height: 10),
+                              TextField(
+                                controller: _pinController,
+                                obscureText: true,
+                                enableSuggestions: false,
+                                autocorrect: false,
+                                textInputAction: TextInputAction.done,
+                                onSubmitted: (_) {
+                                  if (_busy) return;
+                                  _processSelectedAudio();
+                                },
+                                keyboardType: TextInputType.number,
+                                inputFormatters: [
+                                  FilteringTextInputFormatter.digitsOnly,
+                                ],
+                                decoration: InputDecoration(
+                                  hintText: 'Enter the same PIN used on Sender',
+                                  hintStyle: TextStyle(color: muted),
+                                  filled: true,
+                                  fillColor: AppColors.backgroundDark,
+                                  enabledBorder: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                    borderSide: BorderSide(
+                                      color: primary.withOpacity01(0.25),
+                                    ),
+                                  ),
+                                  focusedBorder: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                    borderSide: BorderSide(color: primary),
+                                  ),
+                                  contentPadding:
+                                      const EdgeInsets.symmetric(
+                                    horizontal: 14,
+                                    vertical: 14,
+                                  ),
+                                ),
+                                style: TextStyle(
+                                  color: isDark
+                                      ? Colors.white
+                                      : AppColors.slate900,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: AppColors.slate900.withOpacity01(0.50),
+                            borderRadius: BorderRadius.circular(12),
                             border: Border.all(
                               color: primary.withOpacity01(0.10),
                             ),
@@ -347,20 +494,27 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
                           child: Column(
                             children: [
                               Row(
-                                mainAxisAlignment:
-                                    MainAxisAlignment.spaceBetween,
                                 children: [
-                                  Text(
-                                    'Frequency Spectrum Analysis'.toUpperCase(),
-                                    style: TextStyle(
-                                      color: primary.withOpacity01(0.70),
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.bold,
-                                      letterSpacing: 2.0,
+                                  Expanded(
+                                    child: Text(
+                                      'Frequency Spectrum Analysis'
+                                          .toUpperCase(),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        color: primary.withOpacity01(0.70),
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.bold,
+                                        letterSpacing: 2.0,
+                                      ),
                                     ),
                                   ),
+                                  const SizedBox(width: 12),
                                   Text(
                                     '44.1kHz | 16-bit',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.fade,
+                                    softWrap: false,
                                     style: TextStyle(
                                       color: primary.withOpacity01(0.50),
                                       fontSize: 10,
@@ -580,7 +734,7 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
                         ),
                         const SizedBox(height: 10),
                         Text(
-                          'Encryption Key: SHA-256 Device Key (XOR)'
+                          'Encryption Key: Biometric Secret + PIN (SHA-256) (XOR)'
                               .toUpperCase(),
                           textAlign: TextAlign.center,
                           style: TextStyle(
@@ -616,7 +770,7 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
             border: Border(top: BorderSide(color: primary.withOpacity01(0.10))),
           ),
           child: Row(
-            children: const [
+            children: [
               Expanded(
                 child: _BottomItem(
                   icon: Icons.radio,
@@ -629,6 +783,10 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
                   icon: Icons.history,
                   label: 'History',
                   active: false,
+                  onTap: () => Navigator.pushNamed(
+                    context,
+                    HistoryScreen.routeName,
+                  ),
                 ),
               ),
               Expanded(
@@ -636,6 +794,10 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
                   icon: Icons.settings,
                   label: 'Settings',
                   active: false,
+                  onTap: () => Navigator.pushNamed(
+                    context,
+                    SettingsScreen.routeName,
+                  ),
                 ),
               ),
             ],
@@ -821,11 +983,13 @@ class _BottomItem extends StatelessWidget {
   final IconData icon;
   final String label;
   final bool active;
+  final VoidCallback? onTap;
 
   const _BottomItem({
     required this.icon,
     required this.label,
     required this.active,
+    this.onTap,
   });
 
   @override
@@ -833,20 +997,24 @@ class _BottomItem extends StatelessWidget {
     final primary = Theme.of(context).colorScheme.primary;
     final color = active ? primary : AppColors.slate500;
 
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(icon, color: color),
-        const SizedBox(height: 4),
-        Text(
-          label,
-          style: TextStyle(
-            fontSize: 10,
-            fontWeight: FontWeight.w600,
-            color: color,
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: color),
+          const SizedBox(height: 4),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w600,
+              color: color,
+            ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }

@@ -1,18 +1,23 @@
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
+import 'history_screen.dart';
+import 'settings_screen.dart';
 import '../models/audio_packet.dart';
+import '../models/history_entry.dart';
 import '../services/audio_encoder.dart';
-import '../services/device_key_service.dart';
+import '../services/biometric_auth_service.dart';
+import '../services/biometric_key_service.dart';
+import '../services/combined_key_service.dart';
 import '../services/encryption_service.dart';
+import '../services/history_service.dart';
 import '../services/image_processor.dart';
 import '../services/noise_resistant_transmission_service.dart';
 import '../services/permission_service.dart';
 import '../utils/app_colors.dart';
-import '../utils/binary_converter.dart';
 import '../utils/color_extensions.dart';
 import '../utils/ui_decorations.dart';
 
@@ -27,11 +32,18 @@ class SenderScreen extends StatefulWidget {
 
 class _SenderScreenState extends State<SenderScreen> {
   final ImageProcessor _imageProcessor = ImageProcessor();
-  final DeviceKeyService _deviceKeyService = DeviceKeyService();
+  final BiometricAuthService _biometricAuth = BiometricAuthService();
+  final BiometricKeyService _biometricKeyService = BiometricKeyService();
+  final CombinedKeyService _combinedKeyService = CombinedKeyService();
   final EncryptionService _encryptionService = EncryptionService();
+  final HistoryService _history = HistoryService();
   final NoiseResistantTransmissionService _nrsts =
-      NoiseResistantTransmissionService();
+    NoiseResistantTransmissionService();
+  final NoiseResistantTransmissionService _nrstsNoRepetition =
+    NoiseResistantTransmissionService(repetitions: 1);
   final AudioEncoder _audioEncoder = AudioEncoder();
+
+  final TextEditingController _pinController = TextEditingController();
 
   bool _busy = false;
 
@@ -85,6 +97,12 @@ class _SenderScreenState extends State<SenderScreen> {
     });
   }
 
+  @override
+  void dispose() {
+    _pinController.dispose();
+    super.dispose();
+  }
+
   Future<void> _encryptImage() async {
     final imageFile = _selectedImage;
     if (imageFile == null) {
@@ -92,10 +110,28 @@ class _SenderScreenState extends State<SenderScreen> {
       return;
     }
 
+    final pin = _pinController.text;
+    if (pin.trim().isEmpty) {
+      _showSnackBar('Enter a PIN first.');
+      return;
+    }
+
     setState(() => _busy = true);
     try {
+      final authed = await _biometricAuth.authenticate(
+        reason: 'Verify your fingerprint to encrypt this image.',
+      );
+      if (!authed) {
+        _showSnackBar('Fingerprint authentication cancelled.');
+        return;
+      }
+
       final payload = await _imageProcessor.convertImageToBinary(imageFile);
-      final key = await _deviceKeyService.generateDeviceKey();
+      final biometricKey = await _biometricKeyService.getOrCreateBiometricKey();
+      final key = _combinedKeyService.deriveCombinedKey(
+        biometricKey: biometricKey,
+        pin: pin,
+      );
       final encrypted = _encryptionService.encryptBytes(
         dataBytes: payload.payloadBytes,
         key: key,
@@ -126,16 +162,36 @@ class _SenderScreenState extends State<SenderScreen> {
 
     setState(() => _busy = true);
     try {
-      final protectedBytes = _nrsts.protectEncryptedBytes(encryptedBytes);
-      final protectedBits = BinaryConverter.bytesToBits(protectedBytes);
-      final packet = _audioEncoder.encodeBinaryToAudio(protectedBits);
+      AudioPacket packet;
+      bool reducedRedundancy = false;
+
+      try {
+        final protectedBytes = _nrsts.protectEncryptedBytes(encryptedBytes);
+        packet = await _audioEncoder.encodeBytesToAudioFile(protectedBytes);
+      } on FormatException catch (e) {
+        // If the FEC+repetition payload would exceed the WAV 4GB size limit,
+        // retry with repetition disabled (still keeping Reed–Solomon parity).
+        if (!e.message.contains('exceeds 4GB limit')) {
+          rethrow;
+        }
+
+        final protectedBytes = _nrstsNoRepetition.protectEncryptedBytes(
+          encryptedBytes,
+        );
+        packet = await _audioEncoder.encodeBytesToAudioFile(protectedBytes);
+        reducedRedundancy = true;
+      }
 
       if (!mounted) return;
       setState(() {
         _audioPacket = packet;
         _savedAudioFile = null;
       });
-      _showSnackBar('Audio waveform generated (NRSTS protected).');
+      _showSnackBar(
+        reducedRedundancy
+            ? 'Audio waveform generated (repetition reduced to fit WAV size limit).'
+            : 'Audio waveform generated (NRSTS protected).',
+      );
     } catch (e) {
       _showSnackBar('Audio encoding failed: $e');
     } finally {
@@ -155,12 +211,40 @@ class _SenderScreenState extends State<SenderScreen> {
     setState(() => _busy = true);
     try {
       await PermissionService.requestAudioSavePermissions();
-      final file = await _audioEncoder.saveAudioFile(packet.wavBytes);
+
+      final File file;
+      if (packet.wavBytes != null) {
+        file = await _audioEncoder.saveAudioFile(packet.wavBytes!);
+      } else if (packet.wavFilePath != null) {
+        file = await _audioEncoder.saveAudioFileFromPath(packet.wavFilePath!);
+      } else {
+        throw StateError('No audio data available to export.');
+      }
 
       if (!mounted) return;
       setState(() {
         _savedAudioFile = file;
+        _audioPacket = AudioPacket(
+          sampleRate: packet.sampleRate,
+          bitDurationMs: packet.bitDurationMs,
+          frequency0Hz: packet.frequency0Hz,
+          frequency1Hz: packet.frequency1Hz,
+          wavFilePath: file.path,
+        );
       });
+
+      try {
+        await _history.addEntry(
+          HistoryEntry(
+            timestampMs: DateTime.now().millisecondsSinceEpoch,
+            title: 'Audio Exported',
+            detail: 'Encrypted payload encoded to WAV',
+            path: file.path,
+          ),
+        );
+      } catch (_) {
+        // Best-effort; history should not block export.
+      }
       _showSnackBar('Saved: ${file.path}');
     } catch (e) {
       _showSnackBar('Saving failed: $e');
@@ -243,7 +327,10 @@ class _SenderScreenState extends State<SenderScreen> {
                         height: 40,
                         child: Center(
                           child: InkWell(
-                            onTap: null,
+                            onTap: () => Navigator.pushNamed(
+                              context,
+                              SettingsScreen.routeName,
+                            ),
                             borderRadius: BorderRadius.circular(12),
                             child: Container(
                               width: 40,
@@ -328,7 +415,7 @@ class _SenderScreenState extends State<SenderScreen> {
                                         Text(
                                           _selectedImage == null
                                               ? 'Select an image to begin the secure encryption process.'
-                                              : 'Ready to generate device key and encrypt.',
+                                              : 'Ready to verify fingerprint and encrypt.',
                                           textAlign: TextAlign.center,
                                           style: TextStyle(
                                             color: muted,
@@ -365,14 +452,76 @@ class _SenderScreenState extends State<SenderScreen> {
                           ),
                         ),
                         const SizedBox(height: 16),
+                        Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: AppColors.slate900.withOpacity01(0.50),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: AppColors.slate800),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'PIN'.toUpperCase(),
+                                style: TextStyle(
+                                  color: isDark
+                                      ? AppColors.slate500
+                                      : AppColors.slate600,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 2.0,
+                                ),
+                              ),
+                              const SizedBox(height: 10),
+                              TextField(
+                                controller: _pinController,
+                                obscureText: true,
+                                enableSuggestions: false,
+                                autocorrect: false,
+                                keyboardType: TextInputType.number,
+                                inputFormatters: [
+                                  FilteringTextInputFormatter.digitsOnly,
+                                ],
+                                decoration: InputDecoration(
+                                  hintText: 'Use the same PIN on Receiver',
+                                  hintStyle: TextStyle(color: muted),
+                                  filled: true,
+                                  fillColor: AppColors.backgroundDark,
+                                  enabledBorder: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                    borderSide: BorderSide(
+                                      color: primary.withOpacity01(0.25),
+                                    ),
+                                  ),
+                                  focusedBorder: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                    borderSide: BorderSide(color: primary),
+                                  ),
+                                  contentPadding:
+                                      const EdgeInsets.symmetric(
+                                    horizontal: 14,
+                                    vertical: 14,
+                                  ),
+                                ),
+                                style: TextStyle(
+                                  color: isDark
+                                      ? Colors.white
+                                      : AppColors.slate900,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 16),
                         Row(
                           children: [
                             Expanded(
                               child: _TileButton(
                                 enabled: canEncrypt,
                                 primary: primary,
-                                icon: Icons.vpn_key,
-                                label: 'Device Key',
+                                icon: Icons.fingerprint,
+                                label: 'Fingerprint',
                                 onTap: _encryptImage,
                               ),
                             ),
@@ -526,7 +675,7 @@ class _SenderScreenState extends State<SenderScreen> {
             ),
           ),
           child: Row(
-            children: const [
+            children: [
               Expanded(
                 child: _BottomItem(
                   icon: Icons.send,
@@ -546,6 +695,10 @@ class _SenderScreenState extends State<SenderScreen> {
                   icon: Icons.history,
                   label: 'History',
                   active: false,
+                  onTap: () => Navigator.pushNamed(
+                    context,
+                    HistoryScreen.routeName,
+                  ),
                 ),
               ),
               Expanded(
@@ -751,11 +904,13 @@ class _BottomItem extends StatelessWidget {
   final IconData icon;
   final String label;
   final bool active;
+  final VoidCallback? onTap;
 
   const _BottomItem({
     required this.icon,
     required this.label,
     required this.active,
+    this.onTap,
   });
 
   @override
@@ -763,21 +918,25 @@ class _BottomItem extends StatelessWidget {
     final primary = Theme.of(context).colorScheme.primary;
     final color = active ? primary : AppColors.slate500;
 
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(icon, color: color),
-        const SizedBox(height: 4),
-        Text(
-          label.toUpperCase(),
-          style: TextStyle(
-            fontSize: 10,
-            fontWeight: FontWeight.bold,
-            letterSpacing: 2.0,
-            color: color,
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: color),
+          const SizedBox(height: 4),
+          Text(
+            label.toUpperCase(),
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.bold,
+              letterSpacing: 2.0,
+              color: color,
+            ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }

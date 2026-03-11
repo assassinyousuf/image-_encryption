@@ -60,6 +60,40 @@ class NoiseResistantTransmissionService {
     return out;
   }
 
+  Uint8List recoverEncryptedBytes(Uint8List receivedBytes) {
+    if (receivedBytes.isEmpty) {
+      return Uint8List(0);
+    }
+
+    final candidates = <int>{repetitions, 1}.toList(growable: false);
+
+    for (final rep in candidates) {
+      final segments = rep == 1
+          ? <Uint8List>[receivedBytes]
+          : _splitEvenlyBytes(receivedBytes, rep);
+      if (segments == null) {
+        continue;
+      }
+
+      for (final seg in segments) {
+        final recovered = _tryRecoverBytesFromSegment(seg);
+        if (recovered != null) {
+          return recovered;
+        }
+      }
+
+      if (rep > 1) {
+        final voted = _majorityVoteBytes(segments);
+        final recovered = _tryRecoverBytesFromSegment(voted);
+        if (recovered != null) {
+          return recovered;
+        }
+      }
+    }
+
+    return receivedBytes;
+  }
+
   List<int> recoverEncryptedBits(List<int> receivedBits) {
     if (receivedBits.isEmpty) {
       return <int>[];
@@ -95,6 +129,70 @@ class NoiseResistantTransmissionService {
     return trimmedLen == receivedBits.length
         ? List<int>.from(receivedBits)
         : receivedBits.sublist(0, trimmedLen);
+  }
+
+  Uint8List? _tryRecoverBytesFromSegment(Uint8List segmentBytes) {
+    if (segmentBytes.isEmpty) {
+      return null;
+    }
+
+    try {
+      return _ecc.decode(segmentBytes);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  List<Uint8List>? _splitEvenlyBytes(Uint8List bytes, int parts) {
+    if (parts <= 1) {
+      return <Uint8List>[bytes];
+    }
+    if (bytes.length % parts != 0) {
+      return null;
+    }
+
+    final segLen = bytes.length ~/ parts;
+    final out = <Uint8List>[];
+    for (var i = 0; i < parts; i++) {
+      final start = i * segLen;
+      out.add(Uint8List.sublistView(bytes, start, start + segLen));
+    }
+    return out;
+  }
+
+  Uint8List _majorityVoteBytes(List<Uint8List> segments) {
+    if (segments.isEmpty) {
+      return Uint8List(0);
+    }
+
+    final len = segments.first.length;
+    for (final s in segments) {
+      if (s.length != len) {
+        throw ArgumentError('All segments must have the same length.');
+      }
+    }
+
+    final out = Uint8List(len);
+    final threshold = segments.length ~/ 2;
+
+    for (var i = 0; i < len; i++) {
+      var b = 0;
+      for (var bit = 0; bit < 8; bit++) {
+        var ones = 0;
+        final mask = 1 << bit;
+        for (final s in segments) {
+          if ((s[i] & mask) != 0) {
+            ones++;
+          }
+        }
+        if (ones > threshold) {
+          b |= mask;
+        }
+      }
+      out[i] = b;
+    }
+
+    return out;
   }
 
   List<int>? _tryRecoverFromSegment(List<int> segmentBits) {

@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
+import 'history_screen.dart';
 import 'receiver_screen.dart';
+import 'settings_screen.dart';
 import 'sender_screen.dart';
 import '../utils/app_colors.dart';
 import '../utils/color_extensions.dart';
@@ -55,7 +57,10 @@ class HomeScreen extends StatelessWidget {
               children: [
                 _HeaderBar(
                   title: 'DataSymphony',
-                  onSettingsPressed: null,
+                  onSettingsPressed: () => Navigator.pushNamed(
+                    context,
+                    SettingsScreen.routeName,
+                  ),
                 ),
                 Expanded(
                   child: Column(
@@ -227,10 +232,15 @@ class HomeScreen extends StatelessWidget {
         ),
       ),
       bottomNavigationBar: _BottomNavBar(
-        items: const [
-          _BottomNavItem(label: 'Home', icon: Icons.home, active: true),
-          _BottomNavItem(label: 'Vault', icon: Icons.lock, active: false),
-          _BottomNavItem(label: 'History', icon: Icons.history, active: false),
+        items: [
+          const _BottomNavItem(label: 'Home', icon: Icons.home, active: true),
+          const _BottomNavItem(label: 'Vault', icon: Icons.lock, active: false),
+          _BottomNavItem(
+            label: 'History',
+            icon: Icons.history,
+            active: false,
+            onTap: () => Navigator.pushNamed(context, HistoryScreen.routeName),
+          ),
         ],
       ),
     );
@@ -395,28 +405,34 @@ class _BottomNavBar extends StatelessWidget {
           children: [
             for (final item in items)
               Expanded(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      item.icon,
-                      color: item.active
-                          ? primary
-                          : (isDark ? AppColors.slate500 : AppColors.slate600),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      item.label.toUpperCase(),
-                      style: TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 2.0,
+                child: InkWell(
+                  onTap: item.onTap,
+                  borderRadius: BorderRadius.circular(12),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        item.icon,
                         color: item.active
                             ? primary
                             : (isDark ? AppColors.slate500 : AppColors.slate600),
                       ),
-                    ),
-                  ],
+                      const SizedBox(height: 4),
+                      Text(
+                        item.label.toUpperCase(),
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 2.0,
+                          color: item.active
+                              ? primary
+                              : (isDark
+                                    ? AppColors.slate500
+                                    : AppColors.slate600),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
           ],
@@ -430,10 +446,12 @@ class _BottomNavItem {
   final String label;
   final IconData icon;
   final bool active;
+  final VoidCallback? onTap;
 
   const _BottomNavItem({
     required this.label,
     required this.icon,
     required this.active,
+    this.onTap,
   });
 }

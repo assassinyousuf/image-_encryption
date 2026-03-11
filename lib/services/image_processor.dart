@@ -1,86 +1,72 @@
 import 'dart:io';
-import 'dart:math' as math;
 import 'dart:typed_data';
 
-import 'package:image/image.dart' as img;
+import 'package:crypto/crypto.dart';
 
 class ImagePayload {
-  static const String magic = 'I2A1';
-  static const int headerSizeBytes = 20;
+  static const String magic = 'I2A3';
+  static const int headerSizeBytes = 44;
 
-  final int width;
-  final int height;
-  final int channels;
+  final String extension;
+  final Uint8List imageBytes;
   final Uint8List payloadBytes;
 
   const ImagePayload({
-    required this.width,
-    required this.height,
-    required this.channels,
+    required this.extension,
+    required this.imageBytes,
     required this.payloadBytes,
   });
 }
 
 class ImageProcessor {
-  static const int maxDimension = 32;
-
   Future<ImagePayload> convertImageToBinary(File imageFile) async {
     final imageBytes = await imageFile.readAsBytes();
-    final decoded = img.decodeImage(imageBytes);
-    if (decoded == null) {
-      throw const FormatException('Unsupported or corrupted image file.');
+    if (imageBytes.isEmpty) {
+      throw const FormatException('Selected image file is empty.');
     }
 
-    final prepared = _prepareForTransmission(decoded);
+    final digestBytes = Uint8List.fromList(sha256.convert(imageBytes).bytes);
 
-    const channels = 3;
-    final rgbBytes = prepared.getBytes(order: img.ChannelOrder.rgb);
-
-    final expectedLen = prepared.width * prepared.height * channels;
-    if (rgbBytes.length != expectedLen) {
-      throw FormatException(
-        'Unexpected RGB byte length. Expected $expectedLen, got ${rgbBytes.length}.',
-      );
-    }
+    final extension = _fileExtension(imageFile.path);
+    final extensionBytes = Uint8List.fromList(extension.codeUnits);
 
     final header = ByteData(ImagePayload.headerSizeBytes);
     _writeAscii(header, 0, ImagePayload.magic);
-    header.setUint32(4, prepared.width, Endian.little);
-    header.setUint32(8, prepared.height, Endian.little);
-    header.setUint32(12, channels, Endian.little);
-    header.setUint32(16, rgbBytes.length, Endian.little);
+    header.setUint32(4, extensionBytes.length, Endian.little);
+    header.setUint32(8, imageBytes.length, Endian.little);
+    header.buffer.asUint8List().setAll(12, digestBytes);
 
     final payloadBytes = Uint8List(
-      ImagePayload.headerSizeBytes + rgbBytes.length,
+      ImagePayload.headerSizeBytes + extensionBytes.length + imageBytes.length,
     );
     payloadBytes.setAll(0, header.buffer.asUint8List());
-    payloadBytes.setAll(ImagePayload.headerSizeBytes, rgbBytes);
+    payloadBytes.setAll(ImagePayload.headerSizeBytes, extensionBytes);
+    payloadBytes.setAll(
+      ImagePayload.headerSizeBytes + extensionBytes.length,
+      imageBytes,
+    );
 
     return ImagePayload(
-      width: prepared.width,
-      height: prepared.height,
-      channels: channels,
+      extension: extension,
+      imageBytes: imageBytes,
       payloadBytes: payloadBytes,
     );
   }
 
-  img.Image _prepareForTransmission(img.Image image) {
-    final w = image.width;
-    final h = image.height;
-    if (w <= maxDimension && h <= maxDimension) {
-      return image;
+  String _fileExtension(String path) {
+    final fileName = path.split(Platform.pathSeparator).last;
+    final dot = fileName.lastIndexOf('.');
+    if (dot < 0 || dot == fileName.length - 1) {
+      return 'img';
     }
 
-    final scale = math.min(maxDimension / w, maxDimension / h);
-    final newW = math.max(1, (w * scale).round());
-    final newH = math.max(1, (h * scale).round());
+    final ext = fileName.substring(dot + 1).toLowerCase();
+    if (ext.length > 10) {
+      return 'img';
+    }
 
-    return img.copyResize(
-      image,
-      width: newW,
-      height: newH,
-      interpolation: img.Interpolation.average,
-    );
+    final safe = ext.replaceAll(RegExp(r'[^a-z0-9]'), '');
+    return safe.isEmpty ? 'img' : safe;
   }
 
   void _writeAscii(ByteData bd, int offset, String s) {
