@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import '../utils/binary_converter.dart';
 import 'error_correction_service.dart';
 
@@ -37,6 +39,23 @@ class NoiseResistantTransmissionService {
     );
     for (var r = 0; r < repetitions; r++) {
       out.setRange(r * fecBits.length, (r + 1) * fecBits.length, fecBits);
+    }
+    return out;
+  }
+
+  Uint8List protectEncryptedBytes(Uint8List encryptedBytes) {
+    if (encryptedBytes.isEmpty) {
+      return Uint8List(0);
+    }
+
+    final fecBytes = _ecc.encode(encryptedBytes);
+    if (repetitions == 1) {
+      return fecBytes;
+    }
+
+    final out = Uint8List(fecBytes.length * repetitions);
+    for (var r = 0; r < repetitions; r++) {
+      out.setRange(r * fecBytes.length, (r + 1) * fecBytes.length, fecBytes);
     }
     return out;
   }

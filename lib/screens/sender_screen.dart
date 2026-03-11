@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -11,6 +12,7 @@ import '../services/image_processor.dart';
 import '../services/noise_resistant_transmission_service.dart';
 import '../services/permission_service.dart';
 import '../utils/app_colors.dart';
+import '../utils/binary_converter.dart';
 import '../utils/color_extensions.dart';
 import '../utils/ui_decorations.dart';
 
@@ -34,7 +36,7 @@ class _SenderScreenState extends State<SenderScreen> {
   bool _busy = false;
 
   File? _selectedImage;
-  List<int>? _encryptedBits;
+  Uint8List? _encryptedBytes;
   AudioPacket? _audioPacket;
   File? _savedAudioFile;
 
@@ -77,7 +79,7 @@ class _SenderScreenState extends State<SenderScreen> {
 
     setState(() {
       _selectedImage = File(path);
-      _encryptedBits = null;
+      _encryptedBytes = null;
       _audioPacket = null;
       _savedAudioFile = null;
     });
@@ -94,14 +96,14 @@ class _SenderScreenState extends State<SenderScreen> {
     try {
       final payload = await _imageProcessor.convertImageToBinary(imageFile);
       final key = await _deviceKeyService.generateDeviceKey();
-      final encrypted = _encryptionService.encryptBits(
-        dataBits: payload.payloadBits,
+      final encrypted = _encryptionService.encryptBytes(
+        dataBytes: payload.payloadBytes,
         key: key,
       );
 
       if (!mounted) return;
       setState(() {
-        _encryptedBits = encrypted;
+        _encryptedBytes = encrypted;
         _audioPacket = null;
         _savedAudioFile = null;
       });
@@ -116,15 +118,16 @@ class _SenderScreenState extends State<SenderScreen> {
   }
 
   Future<void> _convertToAudio() async {
-    final bits = _encryptedBits;
-    if (bits == null) {
+    final encryptedBytes = _encryptedBytes;
+    if (encryptedBytes == null) {
       _showSnackBar('Encrypt the image first.');
       return;
     }
 
     setState(() => _busy = true);
     try {
-      final protectedBits = _nrsts.protectEncryptedBits(bits);
+      final protectedBytes = _nrsts.protectEncryptedBytes(encryptedBytes);
+      final protectedBits = BinaryConverter.bytesToBits(protectedBytes);
       final packet = _audioEncoder.encodeBinaryToAudio(protectedBits);
 
       if (!mounted) return;
@@ -189,12 +192,12 @@ class _SenderScreenState extends State<SenderScreen> {
     final muted = isDark ? AppColors.slate400 : AppColors.slate600;
 
     final step1Done = _selectedImage != null;
-    final step2Done = _encryptedBits != null;
+    final step2Done = _encryptedBytes != null;
     final step3Done = _audioPacket != null;
     final activeStep = !step1Done ? 1 : (!step2Done ? 2 : (!step3Done ? 3 : 3));
 
     final canEncrypt = !_busy && _selectedImage != null;
-    final canEncode = !_busy && _encryptedBits != null;
+    final canEncode = !_busy && _encryptedBytes != null;
     final canExport = !_busy && _audioPacket != null;
 
     return Scaffold(

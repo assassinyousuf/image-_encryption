@@ -1,8 +1,8 @@
 import 'dart:typed_data';
 
 class BinaryConverter {
-  static List<int> bytesToBits(Uint8List bytes) {
-    final bits = List<int>.filled(bytes.length * 8, 0, growable: false);
+  static Uint8List bytesToBits(Uint8List bytes) {
+    final bits = Uint8List(bytes.length * 8);
     var bitIndex = 0;
 
     for (final byte in bytes) {
